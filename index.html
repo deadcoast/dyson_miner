@@ -70,7 +70,7 @@
   const colonySize = 50; // Size of colony visual (1/3 of mothership)
 
   // Primary resources:
-  let money = 500;         // Earned via asteroid mining and used for upgrades.
+  let money = 1000000;         // Earned via asteroid mining and used for upgrades.
   let rawPower = 0;        // Harvested by Dyson drones.
   let dysonParts = 0;      // Dyson Sphere parts (progress toward a complete sphere).
   const dysonSphereTarget = 100;
@@ -985,12 +985,16 @@
       updatePopulation();
       updateRaiders();
       colonies.forEach(colony => colony.update());
+      currentSystem.update();  // Update current system (includes habitable world)
       dysonSphereRotation += 0.005;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       drawStars();
       drawSun();
       drawDysonSphere();
+      if (currentSystem.habitableWorld) {
+        currentSystem.habitableWorld.draw(ctx);
+      }
       drawMothership();
       drawAsteroids();
       drawAstroDrones();
@@ -1048,9 +1052,33 @@
           const b = selectedSystem.travelBtnBounds;
           if (mouseX >= b.x && mouseX <= b.x + b.w &&
               mouseY >= b.y && mouseY <= b.y + b.h) {
+            // Save current system's state before traveling
             currentSystem.saveState();
+            
+            // Travel to new system
             currentSystem = selectedSystem;
+            
+            // Reset resources and drones for fresh start
+            money = 1000000;
+            rawPower = 0;
+            dysonParts = 0;
+            food = 200;
+            population = 50;
+            colonies = [];
+            asteroids = [];
+            asteroidDrones = [];
+            dysonDrones = [];
+            spawnAsteroids();
+            
+            // Add initial miner if this is the first time visiting
+            if (!currentSystem.hasBeenVisited) {
+              asteroidDrones.push(new AstroDrone());
+              currentSystem.hasBeenVisited = true;
+            }
+            
+            // Then load any existing state of the new system
             currentSystem.loadState();
+            
             isGalaxyView = false;
           }
         } else if (selectedSystem.unlockBtnBounds) {
@@ -1058,6 +1086,21 @@
           if (mouseX >= b.x && mouseX <= b.x + b.w &&
               mouseY >= b.y && mouseY <= b.y + b.h) {
             selectedSystem.isUnlocked = true;
+            // Initialize the new system with a habitable world
+            selectedSystem.habitableWorld = new HabitableWorld(
+              canvas.width/2,
+              canvas.height/2 + 150
+            );
+            // Reset the new system's resources and add initial miner
+            selectedSystem.resources = {
+              money: 1000000,
+              rawPower: 0,
+              dysonParts: 0,
+              food: 200,
+              population: 50
+            };
+            selectedSystem.asteroidDrones = [new AstroDrone()];
+            selectedSystem.hasBeenVisited = true;
           }
         }
       }
@@ -1161,6 +1204,9 @@
     createStars();
     spawnAsteroids();
     initGalaxy();
+    
+    // Add initial miner to home system
+    asteroidDrones.push(new AstroDrone());
     
     // Start the game loop
     gameLoop();
@@ -1478,7 +1524,7 @@
       this.dysonProgress = 0;
       this.isUnlocked = false;
       this.resources = {
-        money: 500,
+        money: 1000000,
         rawPower: 0,
         dysonParts: 0,
         food: 200,
@@ -1487,7 +1533,7 @@
       this.asteroids = [];
       this.asteroidDrones = [];
       this.dysonDrones = [];
-      this.habitableWorld = null;  // Will be set for first colonized system
+      this.habitableWorld = null;
     }
 
     saveState() {
@@ -1516,12 +1562,11 @@
       asteroidDrones = this.asteroidDrones.slice();
       dysonDrones = this.dysonDrones.slice();
 
-      // Initialize habitable world if this is the first colonized system
-      if (this.isUnlocked && !this.habitableWorld && 
-          galaxySystems.filter(s => s.isUnlocked).length === 2) {
+      // Initialize habitable world if this is a newly colonized system
+      if (this.isUnlocked && !this.habitableWorld && this !== galaxySystems[0]) {
         this.habitableWorld = new HabitableWorld(
           canvas.width/2, 
-          canvas.height/2 + 200
+          canvas.height/2 + 150
         );
       }
     }
