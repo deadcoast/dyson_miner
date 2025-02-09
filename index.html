@@ -1,0 +1,1675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dyson Sphere Harvester: Starship Command</title>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: 'Press Start 2P', cursive;
+    }
+    
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Add some custom scrollbar styling */
+    ::-webkit-scrollbar {
+      width: 10px;
+    }
+    
+    ::-webkit-scrollbar-track {
+      background: #000;
+    }
+    
+    ::-webkit-scrollbar-thumb {
+      background: #0ff;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+
+<script>
+  /**************** GLOBAL VARIABLES & INITIAL SETTINGS ****************/
+  const canvas = document.getElementById("gameCanvas");
+  const ctx = canvas.getContext("2d");
+  const FPS = 60;
+
+  // Move SPRITES declaration to top with other globals
+  const SPRITES = {};
+
+  // Galaxy Map System
+  let currentSystem = null;
+  let galaxySystems = [];
+  let isGalaxyView = false;
+  let galaxyViewOffset = { x: 0, y: 0 };
+  let selectedSystem = null;
+  let galaxyMapExitBounds = null;
+
+  // Positions: The mothership (base) is at the bottom center; the Sun is at the center.
+  let baseX = canvas.width / 2;
+  let baseY = canvas.height - 40;
+  let sunX = canvas.width / 2;
+  let sunY = canvas.height / 2 + 30;
+
+  // Colony system
+  let colonies = [];
+  let colonyPopulation = 0;
+  let maxColonies = 5;
+  const colonySize = 50; // Size of colony visual (1/3 of mothership)
+
+  // Primary resources:
+  let money = 500;         // Earned via asteroid mining and used for upgrades.
+  let rawPower = 0;        // Harvested by Dyson drones.
+  let dysonParts = 0;      // Dyson Sphere parts (progress toward a complete sphere).
+  const dysonSphereTarget = 100;
+
+  // Drone production and efficiency parameters:
+  let asteroidYieldMultiplier = 1.0;  // Affects money earned from asteroids.
+  let dysonYieldMultiplier = 1.0;     // Affects raw power yield from Dyson drones.
+  let dysonHarvest = 20;              // Base raw power yield from a Dyson drone cycle.
+  let droneSpeed = 2.0;               // Movement speed for all drones.
+
+  // Starship management: population, food, defense.
+  let population = 50;
+  let maxPopulation = 100;
+  let food = 200;
+  let foodProduction = 5;          // Food produced per second.
+  let populationGrowthRate = 0.05;   // Growth rate (per second) when food is abundant.
+  let defenseLevel = 0;
+
+  // Conversion: rawPower → dysonParts.
+  let conversionRatePercent = 0.10; // 10% of raw power per second is converted.
+  const conversionRatio = 50;        // 50 raw power = 1 Dyson part.
+
+  // Auto production intervals (in frames):
+  let autoAstroDroneInterval = FPS * 30; // Every 30 seconds, an extra Astro Drone is added.
+  let autoAstroDroneTimer = autoAstroDroneInterval;
+  let autoDysonDroneInterval = FPS * 45;  // Every 45 seconds, an extra Dyson Drone is added.
+  let autoDysonDroneTimer = autoDysonDroneInterval;
+
+  // Raider event variables:
+  let raiderTimer = FPS * (20 + Math.random() * 10);  // Next attack between 20–30 seconds.
+  let raiderFlashTimer = 0;
+
+  // Dyson Sphere rotation (for an animated twist):
+  let dysonSphereRotation = 0;
+
+  // Add to global variables
+  let hudExpanded = false;
+  const maxHudHeight = window.innerHeight; // Make HUD full height when expanded
+  const minHudHeight = 30;
+  let currentHudHeight = minHudHeight;
+  const hudWidth = 400; // Width of expanded HUD
+  
+  // Submenu states
+  const menuCategories = {
+    mining: { name: "Mining", isOpen: false },
+    dyson: { name: "Dyson Sphere", isOpen: false },
+    mothership: { name: "Mothership", isOpen: false },
+    colonies: { name: "Colonies", isOpen: false }
+  };
+
+  // Reorganize upgrades into categories
+  const categorizedUpgrades = {
+    mining: [
+      { id: "buyAstroDrone", name: "Buy Astro Drone", cost: 200, level: 0, costScale: 1.5,
+        action: function() { asteroidDrones.push(new AstroDrone()); } },
+      { id: "astroEfficiency", name: "Astro Efficiency", cost: 300, level: 0, costScale: 1.6,
+        action: function() { asteroidYieldMultiplier += 0.2; } }
+    ],
+    dyson: [
+      { id: "buyDysonDrone", name: "Buy Dyson Drone", cost: 250, level: 0, costScale: 1.5,
+        action: function() { dysonDrones.push(new DysonDrone()); } },
+      { id: "dysonEfficiency", name: "Dyson Efficiency", cost: 350, level: 0, costScale: 1.6,
+        action: function() { dysonYieldMultiplier += 0.2; } },
+      { id: "conversionEfficiency", name: "Convert Efficiency", cost: 400, level: 0, costScale: 1.7,
+        action: function() { conversionRatePercent += 0.02; } }
+    ],
+    mothership: [
+      { id: "upgradeStarship", name: "Upgrade Ship", cost: 600, level: 0, costScale: 1.7,
+        action: function() { droneSpeed += 0.5; } },
+      { id: "commandCenter", name: "Command Center", cost: 800, level: 0, costScale: 2.0,
+        action: function() { populationGrowthRate += 0.1; } },
+      { id: "defenseTurrets", name: "Defense Turrets", cost: 400, level: 0, costScale: 1.6,
+        action: function() { defenseLevel += 5; } },
+      { id: "shieldGenerators", name: "Shield Generator", cost: 600, level: 0, costScale: 1.8,
+        action: function() { defenseLevel += 10; } }
+    ],
+    colonies: [
+      { id: "foodSynthesis", name: "Food Synthesis", cost: 300, level: 0, costScale: 1.7,
+        action: function() { foodProduction += 2; } },
+      { id: "buildBarracks", name: "Build Barracks", cost: 500, level: 0, costScale: 2.0,
+        action: function() { maxPopulation += 20; } },
+      { id: "buildColony", name: "Build Colony", cost: 1000, level: 0, costScale: 2.0,
+        action: function() {
+          if (colonies.length < maxColonies) {
+            const x = Math.random() * (canvas.width - colonySize) + colonySize/2;
+            const y = canvas.height/2 + Math.random() * (canvas.height/3) - canvas.height/6;
+            colonies.push(new Colony(x, y));
+          }
+        }
+      }
+    ]
+  };
+
+  // Helper: Dyson multiplier based on Dyson Sphere completion.
+  function getDysonMultiplier() {
+    let progress = Math.min(dysonParts / dysonSphereTarget, 1);
+    return 1 + progress; // Up to 2× production when complete.
+  }
+
+  // Utility: Distance between two points.
+  function getDistance(x1, y1, x2, y2) {
+    return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+  }
+
+  /**************** STARFIELD BACKGROUND ****************/
+  let stars = [];
+  function createStars() {
+    stars = [];
+    for (let i = 0; i < 100; i++) {
+      stars.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        radius: Math.random() * 1.5 + 0.5
+      });
+    }
+  }
+  createStars();
+
+  function drawStars() {
+    ctx.save();
+    ctx.fillStyle = "#fff";
+    stars.forEach(star => {
+      ctx.beginPath();
+      ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+
+  /**************** ARRAYS FOR DRONES & ASTEROIDS ****************/
+  const asteroidDrones = [];
+  const dysonDrones = [];
+  let asteroids = [];
+
+  /**************** DRONE CLASSES ****************/
+
+  // AstroDrone: Mines asteroids to earn money.
+  class AstroDrone {
+    constructor() {
+      this.x = baseX;
+      this.y = baseY;
+      this.state = "idle";  // States: "idle" → "going" → "mining" → "returning"
+      this.target = null;
+      this.speed = droneSpeed;
+      this.miningTime = 100; // Frames required to mine an asteroid.
+      this.timer = 0;
+    }
+    update() {
+      if (this.state === "idle") {
+        if (asteroids.length > 0) {
+          // Choose a random asteroid to mine.
+          this.target = asteroids[Math.floor(Math.random() * asteroids.length)];
+          this.state = "going";
+        }
+      } else if (this.state === "going") {
+        let dx = this.target.x - this.x;
+        let dy = this.target.y - this.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 5) {
+          this.state = "mining";
+          this.timer = this.miningTime;
+        } else {
+          this.x += (dx / dist) * this.speed;
+          this.y += (dy / dist) * this.speed;
+        }
+      } else if (this.state === "mining") {
+        this.timer--;
+        if (this.timer <= 0) {
+          // Upon mining completion, add money (yield scaled by multiplier).
+          money += this.target.yield * asteroidYieldMultiplier;
+          this.state = "returning";
+          this.target = null;
+        }
+      } else if (this.state === "returning") {
+        let dx = baseX - this.x;
+        let dy = baseY - this.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 5) {
+          this.state = "idle";
+        } else {
+          this.x += (dx / dist) * this.speed;
+          this.y += (dy / dist) * this.speed;
+        }
+      }
+    }
+    draw(ctx) {
+      ctx.save();
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = "#0f0";
+      let gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, 5);
+      gradient.addColorStop(0, "#0f0");
+      gradient.addColorStop(1, "#003300");
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // DysonDrone: Harvests solar energy from the Sun.
+  class DysonDrone {
+    constructor() {
+      this.x = baseX;
+      this.y = baseY;
+      this.state = "idle";  // States: "idle" → "harvesting" → "waiting" → "returning"
+      this.timer = 0;
+    }
+    update() {
+      if (this.state === "idle") {
+        this.state = "harvesting";
+      } else if (this.state === "harvesting") {
+        let dx = sunX - this.x;
+        let dy = sunY - this.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < 5) {
+          this.state = "waiting";
+          this.timer = 60; // Harvest for 60 frames.
+        } else {
+          this.x += (dx / dist) * this.speed();
+          this.y += (dy / dist) * this.speed();
+        }
+      } else if (this.state === "waiting") {
+        this.timer--;
+        if (this.timer <= 0) {
+          this.state = "returning";
+        }
+      } else if (this.state === "returning") {
+        let dx = baseX - this.x;
+        let dy = baseY - this.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < 5) {
+          // Deposit harvested energy (boosted by Dyson Sphere progress).
+          rawPower += dysonHarvest * dysonYieldMultiplier * getDysonMultiplier();
+          this.state = "idle";
+        } else {
+          this.x += (dx / dist) * this.speed();
+          this.y += (dy / dist) * this.speed();
+        }
+      }
+    }
+    speed() {
+      return droneSpeed;
+    }
+    draw(ctx) {
+      ctx.save();
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = "#0ff";
+      let gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, 5);
+      gradient.addColorStop(0, "#0ff");
+      gradient.addColorStop(1, "#003333");
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  /**************** ASTEROID CLASS ****************/
+  class Asteroid {
+    constructor(x, y, radius, yieldValue) {
+      this.x = x;
+      this.y = y;
+      this.radius = radius;
+      this.yield = yieldValue; // Money earned when mined.
+      this.dx = (Math.random() - 0.5) * 0.5;
+      this.dy = (Math.random() - 0.5) * 0.5;
+    }
+    update() {
+      this.x += this.dx;
+      this.y += this.dy;
+      // Wrap around the canvas edges.
+      if (this.x < -this.radius) this.x = canvas.width + this.radius;
+      if (this.x > canvas.width + this.radius) this.x = -this.radius;
+      if (this.y < -this.radius) this.y = canvas.height + this.radius;
+      if (this.y > canvas.height + this.radius) this.y = -this.radius;
+    }
+    draw(ctx) {
+      let gradient = ctx.createRadialGradient(this.x - this.radius/3, this.y - this.radius/3, this.radius/5, this.x, this.y, this.radius);
+      gradient.addColorStop(0, "#555");
+      gradient.addColorStop(1, "#222");
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
+      ctx.fill();
+      // Add crater details.
+      ctx.fillStyle = "rgba(0,0,0,0.2)";
+      ctx.beginPath();
+      ctx.arc(this.x - this.radius/4, this.y - this.radius/4, this.radius/6, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(this.x + this.radius/3, this.y + this.radius/3, this.radius/8, 0, Math.PI*2);
+      ctx.fill();
+      ctx.strokeStyle = "#888";
+      ctx.stroke();
+    }
+  }
+
+  // Spawn 6 asteroids in the upper half of the canvas.
+  function spawnAsteroids() {
+    asteroids = [];
+    for (let i = 0; i < 6; i++) {
+      let x = Math.random() * canvas.width;
+      let y = Math.random() * (canvas.height / 2);
+      let radius = 20 + Math.random() * 20;
+      let yieldValue = Math.floor(radius * 5);
+      asteroids.push(new Asteroid(x, y, radius, yieldValue));
+    }
+  }
+  spawnAsteroids();
+
+  /**************** COLONY SYSTEM ****************/
+  class ColonyShip {
+    constructor(sourceColony, targetColony) {
+      this.x = sourceColony.x;
+      this.y = sourceColony.y;
+      this.sourceColony = sourceColony;
+      this.targetColony = targetColony;
+      this.speed = 1.0;
+      this.size = 8; // Smaller than drones
+      this.state = "outbound"; // outbound or returning
+      this.tradeCargo = Math.floor(Math.random() * 10) + 5; // Random cargo value
+    }
+
+    update() {
+      let targetX, targetY;
+      if (this.state === "outbound") {
+        targetX = this.targetColony.x;
+        targetY = this.targetColony.y;
+      } else {
+        targetX = this.sourceColony.x;
+        targetY = this.sourceColony.y;
+      }
+
+      // Move towards target
+      const dx = targetX - this.x;
+      const dy = targetY - this.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      
+      if (dist < 5) {
+        if (this.state === "outbound") {
+          this.state = "returning";
+          this.targetColony.receiveTrade(this.tradeCargo);
+        } else {
+          this.sourceColony.receiveTrade(this.tradeCargo);
+          return true; // Ship has completed its journey
+        }
+      }
+
+      this.x += (dx / dist) * this.speed;
+      this.y += (dy / dist) * this.speed;
+      return false;
+    }
+
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      
+      // Determine angle of movement for ship rotation
+      const angle = Math.atan2(
+        this.state === "outbound" ? 
+          this.targetColony.y - this.y : 
+          this.sourceColony.y - this.y,
+        this.state === "outbound" ? 
+          this.targetColony.x - this.x : 
+          this.sourceColony.x - this.x
+      );
+      ctx.rotate(angle);
+
+      // Draw small ship
+      ctx.fillStyle = "#4a90e2";
+      ctx.beginPath();
+      ctx.moveTo(-this.size/2, -this.size/2);
+      ctx.lineTo(this.size/2, 0);
+      ctx.lineTo(-this.size/2, this.size/2);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    }
+  }
+
+  class Starport {
+    constructor(x, y, size) {
+      this.x = x;
+      this.y = y;
+      this.size = size;
+      this.rotation = Math.random() * Math.PI * 2;
+    }
+
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation);
+
+      // Draw starport base
+      ctx.fillStyle = "#2171c7";
+      ctx.beginPath();
+      ctx.arc(0, 0, this.size, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Draw landing pad
+      ctx.strokeStyle = "#4a90e2";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-this.size, 0);
+      ctx.lineTo(this.size, 0);
+      ctx.stroke();
+
+      // Draw small buildings
+      ctx.fillStyle = "#4a90e2";
+      for (let i = 0; i < 3; i++) {
+        const angle = (i / 3) * Math.PI * 2;
+        const bx = Math.cos(angle) * (this.size * 0.6);
+        const by = Math.sin(angle) * (this.size * 0.6);
+        ctx.fillRect(bx - 3, by - 3, 6, 6);
+      }
+
+      ctx.restore();
+    }
+  }
+
+  class Colony {
+    constructor(x, y) {
+      this.x = x;
+      this.y = y;
+      this.population = 50;
+      this.maxPopulation = 100;
+      this.foodProduction = 2;
+      this.food = 100;
+      this.ships = [];
+      this.maxShips = 20;
+      this.tradeTimer = 0;
+      this.tradeInterval = FPS * 5; // Try to trade every 5 seconds
+      this.starports = [];
+      this.nextStarportThreshold = 75; // Population needed for next starport
+      this.resources = 0; // Accumulated from trade
+      this.growthProgress = 0;
+    }
+
+    update() {
+      // Existing food and population logic
+      this.food += this.foodProduction / FPS;
+      const consumption = (this.population * 0.1) / FPS;
+      this.food -= consumption;
+      
+      if (this.food > this.population * 0.5 && this.population < this.maxPopulation) {
+        this.population += (populationGrowthRate * 0.5) / FPS;
+        this.checkGrowth();
+      }
+      if (this.food < 0) {
+        this.population += this.food / (10 * FPS);
+        if (this.population < 0) this.population = 0;
+        this.food = 0;
+      }
+
+      // Update trade timer and attempt trades
+      this.tradeTimer--;
+      if (this.tradeTimer <= 0) {
+        this.attemptTrade();
+        this.tradeTimer = this.tradeInterval;
+      }
+
+      // Update ships
+      this.ships = this.ships.filter(ship => !ship.update());
+
+      // Update growth progress
+      this.growthProgress += (this.resources * 0.001) / FPS;
+      if (this.growthProgress >= 1) {
+        this.expandColony();
+        this.growthProgress = 0;
+      }
+      
+      colonyPopulation = colonies.reduce((sum, colony) => sum + colony.population, 0);
+    }
+
+    attemptTrade() {
+      if (this.ships.length >= this.maxShips) return;
+      
+      // Find another colony to trade with
+      const otherColonies = colonies.filter(c => c !== this);
+      if (otherColonies.length === 0) return;
+
+      const targetColony = otherColonies[Math.floor(Math.random() * otherColonies.length)];
+      this.ships.push(new ColonyShip(this, targetColony));
+    }
+
+    receiveTrade(cargo) {
+      this.resources += cargo;
+      this.food += cargo * 0.5;
+      this.population = Math.min(this.maxPopulation, this.population + cargo * 0.1);
+    }
+
+    checkGrowth() {
+      if (this.population >= this.nextStarportThreshold && 
+          this.starports.length < 5) { // Max 5 starports per colony
+        this.addStarport();
+        this.nextStarportThreshold += 25; // Need more population for next starport
+      }
+    }
+
+    addStarport() {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = colonySize + 20 + Math.random() * 20;
+      const x = this.x + Math.cos(angle) * distance;
+      const y = this.y + Math.sin(angle) * distance;
+      this.starports.push(new Starport(x, y, 10));
+    }
+
+    expandColony() {
+      this.maxPopulation += 20;
+      this.foodProduction += 0.5;
+    }
+
+    draw(ctx) {
+      // Draw starports first (behind colony)
+      this.starports.forEach(starport => starport.draw(ctx));
+
+      // Draw colony base
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      
+      let gradient = ctx.createRadialGradient(0, 0, 5, 0, 0, colonySize/2);
+      gradient.addColorStop(0, "#4a90e2");
+      gradient.addColorStop(1, "#2171c7");
+      ctx.fillStyle = gradient;
+      
+      ctx.beginPath();
+      ctx.ellipse(0, 0, colonySize/2, colonySize/4, 0, Math.PI, 2*Math.PI);
+      ctx.lineTo(colonySize/2, colonySize/4);
+      ctx.quadraticCurveTo(0, colonySize/2, -colonySize/2, colonySize/4);
+      ctx.closePath();
+      ctx.fill();
+
+      // Draw growth progress bar
+      const barWidth = colonySize * 0.8;
+      const barHeight = 4;
+      ctx.fillStyle = "#111";
+      ctx.fillRect(-barWidth/2, -colonySize/2 - 10, barWidth, barHeight);
+      ctx.fillStyle = "#0ff";
+      ctx.fillRect(-barWidth/2, -colonySize/2 - 10, barWidth * this.growthProgress, barHeight);
+      
+      // Population indicator
+      ctx.fillStyle = "#fff";
+      ctx.font = "12px 'Press Start 2P'";
+      ctx.fillText(Math.floor(this.population), -15, -colonySize/3);
+      
+      ctx.restore();
+
+      // Draw all ships
+      this.ships.forEach(ship => ship.draw(ctx));
+    }
+  }
+
+  /**************** UPGRADES ****************/
+  const upgradeButtonWidth = 150;
+  const upgradeButtonHeight = 40;
+  const upgradeButtonMargin = 10;
+
+  /**************** PROCESS CONVERSION (rawPower → dysonParts) ****************/
+  function processConversion() {
+    const conversionFraction = conversionRatePercent / FPS;
+    const powerToConvert = rawPower * conversionFraction;
+    const partsGained = powerToConvert / conversionRatio;
+    dysonParts += partsGained;
+    rawPower -= powerToConvert;
+  }
+
+  /**************** POPULATION & FOOD MANAGEMENT ****************/
+  function updatePopulation() {
+    food += foodProduction / FPS;
+    const consumption = (population * 0.1) / FPS;
+    food -= consumption;
+    if (food > population * 0.5 && population < maxPopulation) {
+      population += populationGrowthRate / FPS;
+    }
+    if (food < 0) {
+      population += food / (10 * FPS);
+      if (population < 0) population = 0;
+      food = 0;
+    }
+  }
+
+  /**************** RAIDER EVENTS ****************/
+  function updateRaiders() {
+    raiderTimer--;
+    if (raiderTimer <= 0) {
+      // 50% chance of an attack.
+      if (Math.random() < 0.5) {
+        let threat = Math.random() * 20 + 10; // Threat level between 10 and 30.
+        if (defenseLevel < threat) {
+          // Raiders succeed: lose 20% of money, 10% of Dyson parts, and 5% of population.
+          money *= 0.8;
+          dysonParts *= 0.9;
+          population *= 0.95;
+        } else {
+          // Attack repelled; bonus money.
+          money += 50;
+        }
+        raiderFlashTimer = FPS; // Flash red for 1 second.
+      }
+      // Reset raider timer between 20–30 seconds.
+      raiderTimer = FPS * (20 + Math.random() * 10);
+    }
+  }
+
+  /**************** DRAWING FUNCTIONS ****************/
+
+  // Draw the Sun with a glowing gradient and corona effect.
+  function drawSun() {
+    let gradient = ctx.createRadialGradient(sunX, sunY, 10, sunX, sunY, 50);
+    gradient.addColorStop(0, "#ff0");
+    gradient.addColorStop(0.5, "#f80");
+    gradient.addColorStop(1, "rgba(255,128,0,0)");
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, 50, 0, Math.PI * 2);
+    ctx.fillStyle = gradient;
+    ctx.fill();
+    
+    // Corona effect:
+    for(let i = 0; i < 3; i++){
+       let r = 60 + i * 10;
+       ctx.beginPath();
+       ctx.arc(sunX, sunY, r, 0, Math.PI*2);
+       ctx.strokeStyle = "rgba(255,150,0," + (0.2 - i*0.05) + ")";
+       ctx.lineWidth = 2;
+       ctx.stroke();
+    }
+  }
+
+  // Draw the Dyson Sphere with rotating segments representing construction progress.
+  function drawDysonSphere() {
+    const sphereRadius = 150;
+    ctx.save();
+    ctx.translate(sunX, sunY);
+    ctx.rotate(dysonSphereRotation);
+    // Outer ring
+    ctx.beginPath();
+    ctx.arc(0, 0, sphereRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Draw segments (20 total) to show built Dyson parts.
+    let totalSegments = 20;
+    let segmentsBuilt = Math.floor((dysonParts / dysonSphereTarget) * totalSegments);
+    for (let i = 0; i < totalSegments; i++) {
+      let angle = (i / totalSegments) * Math.PI * 2;
+      let x1 = sphereRadius * Math.cos(angle);
+      let y1 = sphereRadius * Math.sin(angle);
+      let x2 = (sphereRadius + 10) * Math.cos(angle);
+      let y2 = (sphereRadius + 10) * Math.sin(angle);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = (i < segmentsBuilt) ? "#0ff" : "#444";
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
+    ctx.restore();
+    // Display progress text.
+    ctx.fillStyle = "#fff";
+    ctx.font = "14px sans-serif";
+    let progress = Math.min(dysonParts / dysonSphereTarget, 1);
+    ctx.fillText("Dyson Sphere: " + Math.floor(progress * 100) + "%", sunX - 60, sunY - sphereRadius - 10);
+  }
+
+  // Draw the mothership (base) with enhanced visuals.
+  function drawMothership() {
+    if (SPRITES.ship) {
+      ctx.save();
+      ctx.translate(baseX, baseY);
+      ctx.rotate(-Math.PI/2); // Point upward
+      ctx.drawImage(SPRITES.ship, -75, -50, 150, 100); // Adjusted size for this sprite
+      ctx.restore();
+    } else {
+      ctx.save();
+      ctx.translate(baseX, baseY);
+      let gradient = ctx.createRadialGradient(0, 0, 10, 0, 0, 40);
+      gradient.addColorStop(0, "#00f");
+      gradient.addColorStop(1, "#003");
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 40, 20, 0, Math.PI, 2*Math.PI);
+      ctx.lineTo(40, 20);
+      ctx.quadraticCurveTo(0, 30, -40, 20);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Draw asteroids, Astro Drones, and Dyson Drones.
+  function drawAsteroids() {
+    asteroids.forEach(a => a.draw(ctx));
+  }
+  function drawAstroDrones() {
+    asteroidDrones.forEach(d => d.draw(ctx));
+  }
+  function drawDysonDrones() {
+    dysonDrones.forEach(d => d.draw(ctx));
+  }
+
+  // Draw a rounded rectangle (used for upgrade buttons).
+  function drawRoundedRect(x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // Draw the Heads-Up Display (HUD) showing resources and upgrade buttons.
+  function drawHUD() {
+    if (hudExpanded) {
+        // Full-height left sidebar background
+        ctx.fillStyle = "rgba(0,0,0,0.95)";
+        ctx.fillRect(0, 0, hudWidth, canvas.height);
+        
+        // Stats section at the top
+        ctx.font = "16px 'Press Start 2P'";
+        ctx.fillStyle = "#0ff";
+        
+        // Left column stats
+        ctx.fillText("Money: $" + Math.floor(money), 20, 30);
+        ctx.fillText("Power: " + Math.floor(rawPower), 20, 60);
+        ctx.fillText("Dyson: " + Math.floor(dysonParts) + "/" + dysonSphereTarget, 20, 90);
+        
+        // Right column stats
+        ctx.fillText("Pop: " + Math.floor(population) + "/" + maxPopulation, 200, 30);
+        ctx.fillText("Defense: " + defenseLevel, 200, 60);
+        ctx.fillText("Food: " + Math.floor(food), 200, 90);
+        ctx.fillText("Colonies: " + colonies.length + "/" + maxColonies, 200, 120);
+        ctx.fillText("Colony Pop: " + Math.floor(colonyPopulation), 200, 150);
+
+        // Add Galaxy Map button at the bottom right of the HUD
+        const mapBtnX = hudWidth - 110;
+        const mapBtnY = canvas.height - 40;
+        ctx.fillStyle = "#111";
+        drawRoundedRect(mapBtnX, mapBtnY, 90, 30, 5);
+        ctx.fillStyle = "#0ff";
+        ctx.font = "12px 'Press Start 2P'";
+        ctx.fillText("MAP [M]", mapBtnX + 10, mapBtnY + 20);
+        // Store button bounds
+        galaxyMapButtonBounds = { x: mapBtnX, y: mapBtnY, w: 90, h: 30 };
+
+        // Category menus
+        const buttonWidth = hudWidth - 40;
+        const buttonHeight = 40;
+        const margin = 10;
+        const startY = 180;
+        let currentY = startY;
+
+        // Draw categories and their submenus
+        Object.entries(menuCategories).forEach(([category, info]) => {
+            // Draw category button
+            ctx.fillStyle = info.isOpen ? "#1a1a1a" : "#111";
+            drawRoundedRect(margin, currentY, buttonWidth, buttonHeight, 5);
+            
+            // Category name and arrow
+            ctx.fillStyle = "#0ff";
+            ctx.font = "14px 'Press Start 2P'";
+            ctx.fillText(info.name, margin + 10, currentY + 25);
+            
+            // Draw arrow
+            ctx.beginPath();
+            if (info.isOpen) {
+                ctx.moveTo(buttonWidth - 20, currentY + 15);
+                ctx.lineTo(buttonWidth - 10, currentY + 25);
+                ctx.lineTo(buttonWidth - 20, currentY + 35);
+            } else {
+                ctx.moveTo(buttonWidth - 20, currentY + 15);
+                ctx.lineTo(buttonWidth - 10, currentY + 25);
+                ctx.lineTo(buttonWidth - 20, currentY + 35);
+            }
+            ctx.strokeStyle = "#0ff";
+            ctx.stroke();
+            
+            // Store category button bounds
+            info.btnBounds = { x: margin, y: currentY, w: buttonWidth, h: buttonHeight };
+            
+            currentY += buttonHeight + 5;
+
+            // Draw submenu if category is open
+            if (info.isOpen) {
+                categorizedUpgrades[category].forEach(upgrade => {
+                    ctx.fillStyle = "#222";
+                    drawRoundedRect(margin + 20, currentY, buttonWidth - 20, buttonHeight, 5);
+                    
+                    ctx.fillStyle = money >= upgrade.cost ? "#0ff" : "#666";
+                    ctx.font = "12px 'Press Start 2P'";
+                    ctx.fillText(upgrade.name, margin + 30, currentY + 15);
+                    ctx.fillText("$" + Math.floor(upgrade.cost), margin + 30, currentY + 32);
+                    
+                    // Store upgrade button bounds
+                    upgrade.btnBounds = { 
+                        x: margin + 20, 
+                        y: currentY, 
+                        w: buttonWidth - 20, 
+                        h: buttonHeight 
+                    };
+                    
+                    currentY += buttonHeight + 5;
+                });
+            }
+        });
+
+        // Draw scrollbar if content exceeds canvas height
+        const contentHeight = currentY;
+        if (contentHeight > canvas.height) {
+            const scrollBarWidth = 8;
+            const scrollBarHeight = (canvas.height / contentHeight) * canvas.height;
+            const scrollBarX = hudWidth - scrollBarWidth - 5;
+            const scrollBarY = (canvas.scrollTop / contentHeight) * canvas.height;
+            
+            // Scrollbar track
+            ctx.fillStyle = "#222";
+            ctx.fillRect(scrollBarX, 0, scrollBarWidth, canvas.height);
+            
+            // Scrollbar thumb
+            ctx.fillStyle = "#0ff";
+            ctx.fillRect(scrollBarX, scrollBarY, scrollBarWidth, scrollBarHeight);
+        }
+    } else {
+        // Minimal top bar
+        ctx.fillStyle = "rgba(0,0,0,0.95)";
+        ctx.fillRect(0, 0, canvas.width, currentHudHeight);
+        
+        // Minimal stats
+        ctx.font = "14px 'Press Start 2P'";
+        ctx.fillStyle = "#0ff";
+        ctx.fillText("$" + Math.floor(money), 20, 20);
+        ctx.fillText("PWR:" + Math.floor(rawPower), 200, 20);
+        ctx.fillText("DYSON:" + Math.floor(dysonParts) + "%", 400, 20);
+
+        // Add map button in bottom right corner
+        const mapBtnX = canvas.width - 80;
+        const mapBtnY = canvas.height - 40;
+        ctx.fillStyle = "#111";
+        drawRoundedRect(mapBtnX, mapBtnY, 60, 30, 5);
+        ctx.fillStyle = "#0ff";
+        ctx.font = "12px 'Press Start 2P'";
+        ctx.fillText("MAP", mapBtnX + 10, mapBtnY + 20);
+        // Store button bounds for minimal view
+        galaxyMapButtonBounds = { x: mapBtnX, y: mapBtnY, w: 60, h: 30 };
+    }
+    
+    // Draw toggle button
+    ctx.strokeStyle = "#0ff";
+    ctx.fillStyle = "#0ff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(hudWidth - 30, 5, 20, 20);
+    ctx.stroke();
+    
+    // Arrow
+    ctx.beginPath();
+    if (hudExpanded) {
+        ctx.moveTo(hudWidth - 25, 18);
+        ctx.lineTo(hudWidth - 15, 12);
+        ctx.lineTo(hudWidth - 5, 18);
+    } else {
+        ctx.moveTo(hudWidth - 25, 12);
+        ctx.lineTo(hudWidth - 15, 18);
+        ctx.lineTo(hudWidth - 5, 12);
+    }
+    ctx.stroke();
+  }
+
+  // If a raider attack occurs, flash a red overlay.
+  function drawRaiderFlash() {
+    if (raiderFlashTimer > 0) {
+      ctx.fillStyle = "rgba(255,0,0,0.3)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      raiderFlashTimer--;
+    }
+  }
+
+  /**************** GAME LOOP UPDATES ****************/
+  function updateAsteroids() {
+    asteroids.forEach(asteroid => asteroid.update());
+  }
+
+  function updateAstroDrones() {
+    asteroidDrones.forEach(drone => drone.update());
+  }
+
+  function updateDysonDrones() {
+    dysonDrones.forEach(drone => drone.update());
+  }
+
+  /**************** GAME LOOP ****************/
+  function gameLoop() {
+    if (isGalaxyView) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawGalaxyMap();
+    } else {
+      // Always run the main game loop
+      updateAsteroids();
+      updateAstroDrones();
+      updateDysonDrones();
+      processConversion();
+      updatePopulation();
+      updateRaiders();
+      colonies.forEach(colony => colony.update());
+      dysonSphereRotation += 0.005;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawStars();
+      drawSun();
+      drawDysonSphere();
+      drawMothership();
+      drawAsteroids();
+      drawAstroDrones();
+      drawDysonDrones();
+      colonies.forEach(colony => colony.draw(ctx));
+      drawHUD();
+      drawRaiderFlash();
+    }
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Update mouse handler
+  canvas.addEventListener("click", function(event) {
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
+    
+    // Check for map button click first
+    if (galaxyMapButtonBounds && 
+        mouseX >= galaxyMapButtonBounds.x && 
+        mouseX <= galaxyMapButtonBounds.x + galaxyMapButtonBounds.w &&
+        mouseY >= galaxyMapButtonBounds.y && 
+        mouseY <= galaxyMapButtonBounds.y + galaxyMapButtonBounds.h) {
+        isGalaxyView = !isGalaxyView;
+        if (!isGalaxyView) {
+            selectedSystem = null;
+        }
+        return;
+    }
+
+    if (isGalaxyView) {
+      // Handle galaxy map clicks
+      if (galaxyMapExitBounds && 
+          mouseX >= galaxyMapExitBounds.x && 
+          mouseX <= galaxyMapExitBounds.x + galaxyMapExitBounds.w &&
+          mouseY >= galaxyMapExitBounds.y && 
+          mouseY <= galaxyMapExitBounds.y + galaxyMapExitBounds.h) {
+        isGalaxyView = false;
+        return;
+      }
+
+      // Check for system selection
+      galaxySystems.forEach(system => {
+        const dx = mouseX - (system.x + galaxyViewOffset.x);
+        const dy = mouseY - (system.y + galaxyViewOffset.y);
+        if (Math.sqrt(dx * dx + dy * dy) < 20) {
+          selectedSystem = system;
+          return;
+        }
+      });
+
+      // Check for travel/unlock button clicks
+      if (selectedSystem) {
+        if (selectedSystem.travelBtnBounds) {
+          const b = selectedSystem.travelBtnBounds;
+          if (mouseX >= b.x && mouseX <= b.x + b.w &&
+              mouseY >= b.y && mouseY <= b.y + b.h) {
+            currentSystem.saveState();
+            currentSystem = selectedSystem;
+            currentSystem.loadState();
+            isGalaxyView = false;
+          }
+        } else if (selectedSystem.unlockBtnBounds) {
+          const b = selectedSystem.unlockBtnBounds;
+          if (mouseX >= b.x && mouseX <= b.x + b.w &&
+              mouseY >= b.y && mouseY <= b.y + b.h) {
+            selectedSystem.isUnlocked = true;
+          }
+        }
+      }
+    } else {
+      // Check for HUD toggle button click
+      if (mouseY <= 25 && mouseX >= hudWidth - 30 && mouseX <= hudWidth - 10) {
+          hudExpanded = !hudExpanded;
+          currentHudHeight = hudExpanded ? maxHudHeight : minHudHeight;
+          return;
+      }
+      
+      // Only check buttons if HUD is expanded and click is within HUD area
+      if (hudExpanded && mouseX < hudWidth) {
+          // Check category buttons first
+          Object.entries(menuCategories).forEach(([category, info]) => {
+              const b = info.btnBounds;
+              if (b && mouseX >= b.x && mouseX <= b.x + b.w &&
+                  mouseY >= b.y && mouseY <= b.y + b.h) {
+                  // Toggle this category and close others
+                  Object.keys(menuCategories).forEach(k => {
+                      menuCategories[k].isOpen = (k === category) ? !menuCategories[k].isOpen : false;
+                  });
+                  return;
+              }
+              
+              // If category is open, check its upgrade buttons
+              if (info.isOpen) {
+                  categorizedUpgrades[category].forEach(upgrade => {
+                      const b = upgrade.btnBounds;
+                      if (b && mouseX >= b.x && mouseX <= b.x + b.w &&
+                          mouseY >= b.y && mouseY <= b.y + b.h) {
+                          if (money >= upgrade.cost) {
+                              money -= upgrade.cost;
+                              upgrade.action();
+                              upgrade.level++;
+                              upgrade.cost = Math.floor(upgrade.cost * upgrade.costScale);
+                          }
+                      }
+                  });
+              }
+          });
+      }
+    }
+  });
+
+  // Add key handler for galaxy map
+  document.addEventListener("keydown", function(event) {
+    if (event.key === "m" || event.key === "M") {
+      isGalaxyView = !isGalaxyView;
+      if (!isGalaxyView) {
+        selectedSystem = null;
+      }
+    }
+  });
+
+  // Handle window resizing
+  window.addEventListener('resize', function() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    
+    // Update positions
+    baseX = canvas.width / 2;
+    baseY = canvas.height - 80;
+    sunX = canvas.width / 2;
+    sunY = canvas.height / 2;
+    
+    // Recreate game elements
+    createStars();
+  });
+
+  // Move initGalaxy function to the top level
+  function initGalaxy() {
+    const homeSystem = new GalaxySystem(window.innerWidth/2, window.innerHeight/2, "Home System");
+    homeSystem.isUnlocked = true;
+    galaxySystems.push(homeSystem);
+    currentSystem = homeSystem;
+
+    // Add some nearby systems
+    for (let i = 0; i < 5; i++) {
+      const angle = (i / 5) * Math.PI * 2;
+      const distance = 200;
+      const x = window.innerWidth/2 + Math.cos(angle) * distance;
+      const y = window.innerHeight/2 + Math.sin(angle) * distance;
+      galaxySystems.push(new GalaxySystem(x, y));
+    }
+  }
+
+  // Simplify the game initialization
+  function initGame() {
+    // Set initial canvas size
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    
+    // Set initial positions
+    baseX = canvas.width / 2;
+    baseY = canvas.height - 80;
+    sunX = canvas.width / 2;
+    sunY = canvas.height / 2;
+    
+    // Initialize game components
+    createStars();
+    spawnAsteroids();
+    initGalaxy();
+    
+    // Start the game loop
+    gameLoop();
+  }
+
+  // Wait for window load before starting
+  window.addEventListener('load', function() {
+    initGame();
+    
+    // Load sprites in background
+    loadSprites().catch(error => {
+        console.error('Failed to load sprites:', error);
+    });
+  });
+
+  // Simplify resize handler
+  window.addEventListener('resize', function() {
+    // Update canvas size
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    
+    // Update positions
+    baseX = canvas.width / 2;
+    baseY = canvas.height - 80;
+    sunX = canvas.width / 2;
+    sunY = canvas.height / 2;
+    
+    // Recreate game elements
+    createStars();
+  });
+
+  // Update sprite URLs to actually accessible ones
+  function loadSprites() {
+    const spritesToLoad = {
+        ship: 'https://cdn.pixabay.com/photo/2017/04/04/14/26/spaceship-2201893_1280.png',
+        asteroid: 'https://raw.githubusercontent.com/Kenney/kenney-assets/main/PNG/Meteors/meteorBrown_big1.png',
+        dysonDrone: 'https://raw.githubusercontent.com/Kenney/kenney-assets/main/PNG/Enemies/enemyBlack1.png'
+    };
+
+    return Promise.all(Object.entries(spritesToLoad).map(([key, url]) => {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                SPRITES[key] = img;
+                resolve();
+            };
+            img.onerror = reject;
+            img.src = url;
+        });
+    }));
+  }
+
+  // Add new classes for habitable world features
+  class Satellite {
+    constructor(x, y, type) {
+      this.x = x;
+      this.y = y;
+      this.type = type;
+      this.orbit = Math.random() * Math.PI * 2;
+      this.orbitSpeed = 0.001 + Math.random() * 0.002;
+      this.size = 5;
+    }
+
+    update() {
+      this.orbit += this.orbitSpeed;
+    }
+
+    draw(ctx, centerX, centerY, orbitRadius) {
+      const x = centerX + Math.cos(this.orbit) * orbitRadius;
+      const y = centerY + Math.sin(this.orbit) * orbitRadius;
+      
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.fillStyle = "#0ff";
+      ctx.beginPath();
+      ctx.arc(0, 0, this.size, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Draw satellite dish or solar panels
+      ctx.strokeStyle = "#0ff";
+      ctx.beginPath();
+      if (this.type === "comm") {
+        ctx.arc(0, -2, 3, 0, Math.PI);
+      } else {
+        ctx.moveTo(-4, 0);
+        ctx.lineTo(4, 0);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  class HabitableWorld {
+    constructor(x, y) {
+      this.x = x;
+      this.y = y;
+      this.radius = 30;
+      this.population = 1000;
+      this.maxPopulation = 10000;
+      this.growthRate = 0.1;
+      this.satellites = [];
+      this.ships = [];
+      this.developmentLevel = 0;
+      this.nextSatelliteThreshold = 2000;
+      this.rotation = 0;
+      this.rotationSpeed = 0.001;
+      
+      // Surface features that appear as the world develops
+      this.cities = [];
+      this.addInitialCity();
+    }
+
+    addInitialCity() {
+      this.cities.push({
+        angle: Math.random() * Math.PI * 2,
+        size: 5,
+        lights: 0.3
+      });
+    }
+
+    update() {
+      // Update population growth
+      if (this.population < this.maxPopulation) {
+        this.population *= (1 + (this.growthRate / FPS));
+      }
+
+      // Check for development milestones
+      if (this.population >= this.nextSatelliteThreshold && this.satellites.length < 8) {
+        this.addSatellite();
+        this.nextSatelliteThreshold *= 1.5;
+      }
+
+      // Update all satellites
+      this.satellites.forEach(sat => sat.update());
+
+      // Update ships
+      this.ships = this.ships.filter(ship => !ship.update());
+
+      // Attempt trade with colonies periodically
+      if (Math.random() < 0.02 && this.ships.length < 5) {
+        this.attemptTrade();
+      }
+
+      // Update rotation
+      this.rotation += this.rotationSpeed;
+
+      // Update development level based on population
+      this.developmentLevel = Math.min(1, this.population / this.maxPopulation);
+
+      // Add new cities as population grows
+      if (Math.random() < 0.01 * this.developmentLevel && this.cities.length < 10) {
+        this.cities.push({
+          angle: Math.random() * Math.PI * 2,
+          size: 3 + Math.random() * 4,
+          lights: 0.2 + Math.random() * 0.3
+        });
+      }
+
+      // Grow existing cities
+      this.cities.forEach(city => {
+        if (city.size < 8) {
+          city.size += 0.001;
+          city.lights = Math.min(0.8, city.lights + 0.0001);
+        }
+      });
+    }
+
+    addSatellite() {
+      const type = this.satellites.length % 2 === 0 ? "comm" : "solar";
+      const orbit = Math.random() * Math.PI * 2;
+      this.satellites.push(new Satellite(
+        this.x + Math.cos(orbit) * (this.radius + 20),
+        this.y + Math.sin(orbit) * (this.radius + 20),
+        type
+      ));
+    }
+
+    attemptTrade() {
+      if (colonies.length === 0) return;
+      const targetColony = colonies[Math.floor(Math.random() * colonies.length)];
+      this.ships.push(new TradeShip(this, targetColony));
+    }
+
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation);
+
+      // Draw planet base
+      const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, this.radius);
+      gradient.addColorStop(0, "#4169E1");  // Royal Blue
+      gradient.addColorStop(1, "#1E90FF");  // Dodger Blue
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Draw continents/land masses
+      ctx.fillStyle = "#32CD32";  // Lime Green
+      this.cities.forEach(city => {
+        ctx.save();
+        ctx.rotate(city.angle);
+        ctx.beginPath();
+        ctx.arc(this.radius * 0.7, 0, city.size, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Draw city lights on the dark side
+        ctx.fillStyle = `rgba(255, 255, 0, ${city.lights})`;
+        ctx.beginPath();
+        ctx.arc(this.radius * 0.7, 0, city.size * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+
+      // Draw atmosphere glow
+      const atmoGradient = ctx.createRadialGradient(0, 0, this.radius, 0, 0, this.radius * 1.2);
+      atmoGradient.addColorStop(0, "rgba(135, 206, 235, 0.2)");  // Sky Blue
+      atmoGradient.addColorStop(1, "rgba(135, 206, 235, 0)");
+      ctx.fillStyle = atmoGradient;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius * 1.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+
+      // Draw satellites in orbit
+      this.satellites.forEach(sat => {
+        sat.draw(ctx, this.x, this.y, this.radius + 20);
+      });
+
+      // Draw population indicator
+      ctx.fillStyle = "#fff";
+      ctx.font = "12px 'Press Start 2P'";
+      ctx.fillText(Math.floor(this.population).toLocaleString(), 
+        this.x - 40, this.y + this.radius + 20);
+    }
+  }
+
+  class TradeShip {
+    constructor(source, target) {
+      this.x = source.x;
+      this.y = source.y;
+      this.source = source;
+      this.target = target;
+      this.speed = 2.0;
+      this.size = 10;
+      this.state = "outbound";
+      this.tradeCargo = Math.floor(Math.random() * 20) + 10;
+    }
+
+    update() {
+      let targetX, targetY;
+      if (this.state === "outbound") {
+        targetX = this.target.x;
+        targetY = this.target.y;
+      } else {
+        targetX = this.source.x;
+        targetY = this.source.y;
+      }
+
+      const dx = targetX - this.x;
+      const dy = targetY - this.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      
+      if (dist < 5) {
+        if (this.state === "outbound") {
+          this.state = "returning";
+          if (this.target instanceof Colony) {
+            this.target.receiveTrade(this.tradeCargo * 2);  // Bonus for planet trade
+            money += this.tradeCargo;  // Generate currency from trade
+          }
+        } else {
+          return true;  // Ship has completed its journey
+        }
+      }
+
+      this.x += (dx / dist) * this.speed;
+      this.y += (dy / dist) * this.speed;
+      return false;
+    }
+
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      
+      const angle = Math.atan2(
+        this.state === "outbound" ? 
+          this.target.y - this.y : 
+          this.source.y - this.y,
+        this.state === "outbound" ? 
+          this.target.x - this.x : 
+          this.source.x - this.x
+      );
+      ctx.rotate(angle);
+
+      // Draw larger trade ship
+      ctx.fillStyle = "#ffd700";  // Gold color for trade ships
+      ctx.beginPath();
+      ctx.moveTo(-this.size/2, -this.size/2);
+      ctx.lineTo(this.size/2, 0);
+      ctx.lineTo(-this.size/2, this.size/2);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    }
+  }
+
+  class GalaxySystem {
+    constructor(x, y, name) {
+      this.x = x;
+      this.y = y;
+      this.name = name || "System " + (galaxySystems.length + 1);
+      this.colonies = [];
+      this.dysonProgress = 0;
+      this.isUnlocked = false;
+      this.resources = {
+        money: 500,
+        rawPower: 0,
+        dysonParts: 0,
+        food: 200,
+        population: 50
+      };
+      this.asteroids = [];
+      this.asteroidDrones = [];
+      this.dysonDrones = [];
+      this.habitableWorld = null;  // Will be set for first colonized system
+    }
+
+    saveState() {
+      // Save current system state
+      this.resources.money = money;
+      this.resources.rawPower = rawPower;
+      this.resources.dysonParts = dysonParts;
+      this.resources.food = food;
+      this.resources.population = population;
+      this.colonies = colonies.slice();
+      this.asteroids = asteroids.slice();
+      this.asteroidDrones = asteroidDrones.slice();
+      this.dysonDrones = dysonDrones.slice();
+      this.dysonProgress = dysonParts / dysonSphereTarget;
+    }
+
+    loadState() {
+      // Load system state
+      money = this.resources.money;
+      rawPower = this.resources.rawPower;
+      dysonParts = this.resources.dysonParts;
+      food = this.resources.food;
+      population = this.resources.population;
+      colonies = this.colonies.slice();
+      asteroids = this.asteroids.slice();
+      asteroidDrones = this.asteroidDrones.slice();
+      dysonDrones = this.dysonDrones.slice();
+
+      // Initialize habitable world if this is the first colonized system
+      if (this.isUnlocked && !this.habitableWorld && 
+          galaxySystems.filter(s => s.isUnlocked).length === 2) {
+        this.habitableWorld = new HabitableWorld(
+          canvas.width/2, 
+          canvas.height/2 + 200
+        );
+      }
+    }
+
+    update() {
+      if (this.habitableWorld) {
+        this.habitableWorld.update();
+      }
+    }
+
+    draw(ctx, selected) {
+      const radius = 15;
+      ctx.save();
+      ctx.translate(this.x + galaxyViewOffset.x, this.y + galaxyViewOffset.y);
+
+      // Draw system circle
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+      gradient.addColorStop(0, this.isUnlocked ? "#4a90e2" : "#666");
+      gradient.addColorStop(1, this.isUnlocked ? "#2171c7" : "#333");
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      // Draw Dyson progress ring
+      if (this.dysonProgress > 0) {
+        ctx.beginPath();
+        ctx.arc(0, 0, radius + 5, 0, Math.PI * 2 * this.dysonProgress);
+        ctx.strokeStyle = "#0ff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Draw selection indicator
+      if (selected) {
+        ctx.beginPath();
+        ctx.arc(0, 0, radius + 10, 0, Math.PI * 2);
+        ctx.strokeStyle = "#0ff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Draw system name and status
+      ctx.fillStyle = "#fff";
+      ctx.font = "12px 'Press Start 2P'";
+      ctx.textAlign = "center";
+      ctx.fillText(this.name, 0, radius + 20);
+      
+      if (!this.isUnlocked) {
+        ctx.fillStyle = "#ff4444";
+        ctx.fillText("LOCKED", 0, radius + 40);
+        ctx.font = "8px 'Press Start 2P'";
+        ctx.fillStyle = "#888";
+        ctx.fillText("Requires 1 Dyson Sphere", 0, radius + 55);
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function drawGalaxyMap() {
+    // Draw background
+    ctx.fillStyle = "rgba(0,0,0,0.95)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw stars in background
+    drawStars();
+
+    // Draw connection lines between systems
+    ctx.strokeStyle = "rgba(74,144,226,0.3)";
+    ctx.lineWidth = 1;
+    galaxySystems.forEach((system, i) => {
+      if (system.isUnlocked) {
+        galaxySystems.forEach((otherSystem, j) => {
+          if (i !== j && otherSystem.isUnlocked) {
+            ctx.beginPath();
+            ctx.moveTo(system.x + galaxyViewOffset.x, system.y + galaxyViewOffset.y);
+            ctx.lineTo(otherSystem.x + galaxyViewOffset.x, otherSystem.y + galaxyViewOffset.y);
+            ctx.stroke();
+          }
+        });
+      }
+    });
+
+    // Draw all systems
+    galaxySystems.forEach(system => {
+      system.draw(ctx, system === selectedSystem);
+    });
+
+    // Draw UI elements
+    ctx.fillStyle = "#0ff";
+    ctx.font = "20px 'Press Start 2P'";
+    ctx.fillText("Galaxy Map", 20, 40);
+    
+    if (selectedSystem) {
+      ctx.fillStyle = "#fff";
+      ctx.font = "16px 'Press Start 2P'";
+      ctx.fillText(selectedSystem.name, 20, 80);
+      
+      if (selectedSystem.isUnlocked) {
+        ctx.fillText("Dyson Progress: " + Math.floor(selectedSystem.dysonProgress * 100) + "%", 20, 110);
+        if (selectedSystem !== currentSystem) {
+          // Draw travel button
+          const btnX = 20;
+          const btnY = 130;
+          ctx.fillStyle = "#111";
+          drawRoundedRect(btnX, btnY, 200, 40, 5);
+          ctx.fillStyle = "#0ff";
+          ctx.font = "14px 'Press Start 2P'";
+          ctx.fillText("Travel", btnX + 20, btnY + 25);
+          // Store button bounds for click detection
+          selectedSystem.travelBtnBounds = { x: btnX, y: btnY, w: 200, h: 40 };
+        }
+      } else {
+        // Show colonization requirements
+        ctx.fillStyle = "#ff4444";
+        ctx.fillText("LOCKED SYSTEM", 20, 110);
+        ctx.font = "12px 'Press Start 2P'";
+        ctx.fillStyle = "#888";
+        ctx.fillText("Complete your Dyson Sphere to colonize", 20, 135);
+        
+        // Only show colonize button if Dyson Sphere is complete
+        if (Math.floor((dysonParts / dysonSphereTarget) * 100) >= 100) {
+          const btnX = 20;
+          const btnY = 160;
+          ctx.fillStyle = "#111";
+          drawRoundedRect(btnX, btnY, 200, 40, 5);
+          ctx.fillStyle = "#0ff";
+          ctx.font = "14px 'Press Start 2P'";
+          ctx.fillText("Colonize", btnX + 20, btnY + 25);
+          selectedSystem.unlockBtnBounds = { x: btnX, y: btnY, w: 200, h: 40 };
+        }
+      }
+    }
+
+    // Draw exit button
+    const exitBtnX = canvas.width - 100;
+    const exitBtnY = 20;
+    ctx.fillStyle = "#111";
+    drawRoundedRect(exitBtnX, exitBtnY, 80, 30, 5);
+    ctx.fillStyle = "#0ff";
+    ctx.font = "14px 'Press Start 2P'";
+    ctx.fillText("Exit", exitBtnX + 20, exitBtnY + 20);
+    galaxyMapExitBounds = { x: exitBtnX, y: exitBtnY, w: 80, h: 30 };
+  }
+
+  // Add galaxyMapButtonBounds to global variables at the top
+  let galaxyMapButtonBounds = null;
+</script>
+</body>
+</html>
